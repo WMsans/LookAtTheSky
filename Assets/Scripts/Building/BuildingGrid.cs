@@ -1,9 +1,10 @@
+using System;
 using System.Collections.Generic;
 using UnityEngine;
 
 namespace Building
 {
-    public struct BoardKey
+    public struct BoardKey : IEquatable<BoardKey>
     {
         public Vector3Int Cell;
         public BoardFace Face;
@@ -13,6 +14,12 @@ namespace Building
             Cell = cell;
             Face = face;
         }
+
+        public bool Equals(BoardKey other) => Cell == other.Cell && Face == other.Face;
+        public override bool Equals(object obj) => obj is BoardKey other && Equals(other);
+        public override int GetHashCode() => HashCode.Combine(Cell, Face);
+        public static bool operator ==(BoardKey a, BoardKey b) => a.Equals(b);
+        public static bool operator !=(BoardKey a, BoardKey b) => !a.Equals(b);
     }
 
     public class BuildingGrid : MonoBehaviour
