@@ -72,12 +72,12 @@ namespace Building
             int boardLayer = LayerMask.NameToLayer("Board");
             if (hit.collider.gameObject.layer == boardLayer)
             {
-                // Hit an existing board — target the adjacent cell to extend the structure
+                // Hit an existing board — target the adjacent cell in the direction of the normal
                 Vector3 boardPos = hit.collider.transform.position;
                 Vector3Int boardCell = BoardVisuals.WorldToCell(boardPos);
 
                 _targetCell = boardCell + BoardVisuals.FaceToOffset(hitFace);
-                _targetFace = hitFace;
+                _targetFace = BoardVisuals.OppositeFace(hitFace);
             }
             else
             {
