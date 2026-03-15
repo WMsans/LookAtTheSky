@@ -160,11 +160,13 @@ namespace Building
 
         public static Quaternion GetBoardRotation(BoardOrientation orient)
         {
+            // Board prefab & trigger collider are flat in local XZ (thin along Y).
+            // Rotate so the flat face matches the board's plane:
             return orient switch
             {
-                BoardOrientation.X => Quaternion.identity,                        // XY plane faces Z
-                BoardOrientation.Y => Quaternion.Euler(0f, 90f, 0f),             // YZ plane faces X
-                BoardOrientation.Z => Quaternion.Euler(90f, 0f, 0f),             // XZ plane faces Y
+                BoardOrientation.X => Quaternion.Euler(90f, 0f, 0f),             // XZ → XY plane (vertical wall facing Z)
+                BoardOrientation.Y => Quaternion.Euler(0f, 0f, 90f),             // XZ → YZ plane (vertical wall facing X)
+                BoardOrientation.Z => Quaternion.identity,                        // XZ stays XZ (horizontal floor)
                 _ => Quaternion.identity
             };
         }
