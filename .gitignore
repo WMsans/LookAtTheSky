@@ -99,3 +99,7 @@ InitTestScene*.unity*
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
 /LookAtTheSky.slnx
 /.vscode
+/Assets/Editor Default Resources
+/Assets/Resources/GaskellgamesSettings.asset
+/Assets/Resources/GaskellgamesSettings.asset.meta
+/Assets/Editor Default Resources.meta
