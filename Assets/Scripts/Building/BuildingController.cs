@@ -155,21 +155,7 @@ namespace Building
                 }
             }
 
-            // Scroll wheel
-            if (Mouse.current != null)
-            {
-                float scroll = Mouse.current.scroll.ReadValue().y;
-                if (scroll > 0 && _previousAction.WasPressedThisFrame())
-                {
-                    // Handled via Previous action
-                }
-                else if (scroll < 0 && _nextAction.WasPressedThisFrame())
-                {
-                    // Handled via Next action
-                }
-            }
-
-            // Previous/Next actions (keyboard 1/2 or gamepad dpad)
+            // Previous/Next actions (scroll wheel, keyboard, or gamepad dpad)
             if (_previousAction.WasPressedThisFrame())
             {
                 var mgr = Inventory.InventoryManager.Instance;

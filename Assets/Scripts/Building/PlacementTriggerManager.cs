@@ -179,7 +179,7 @@ namespace Building
                 BoardOrientation.X => basePos + new Vector3(CELL_SIZE / 2f, CELL_SIZE / 2f, 0f),
                 BoardOrientation.Y => basePos + new Vector3(0f, CELL_SIZE / 2f, CELL_SIZE / 2f),
                 BoardOrientation.Z => basePos + new Vector3(CELL_SIZE / 2f, 0f, CELL_SIZE / 2f),
-                _ => basePos
+                _ => basePos + new Vector3(CELL_SIZE / 2f, CELL_SIZE / 2f, CELL_SIZE / 2f)
             };
         }
 
