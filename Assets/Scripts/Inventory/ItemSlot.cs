@@ -18,8 +18,7 @@ namespace Inventory
 
         public int SpaceRemaining()
         {
-            if (IsEmpty) return int.MaxValue;
-            if (Item == null) return 0;
+            if (IsEmpty) return int.MaxValue; // Any item fits; actual cap applied in AddToStack
             return Item.maxStackSize - Count;
         }
 
