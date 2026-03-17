@@ -12,14 +12,10 @@ namespace UI
         [SerializeField] private SlotUI[] _hotbarSlots;    // 9 hotbar mirror slots
         [SerializeField] private CursorItem _cursorItem;
 
-        [Header("Input")]
-        [SerializeField] private InputActionReference _toggleAction;
-
         private Inventory.InventoryManager _inventoryManager;
         private bool _isOpen;
 
         // Held item state for drag/swap (stored separately from CursorItem display)
-        private Inventory.ItemSlot _heldSlotSource; // The slot the item was picked from
         private Inventory.BuildingItemSO _heldItem;
         private int _heldCount;
 
