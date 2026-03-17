@@ -76,8 +76,38 @@ namespace Building
             new( 0, 0, 1, BoardOrientation.X),  // X left = Y front edge
         };
 
+        private static Neighbor[] _fullNeighbors;
+
+        private static Neighbor[] BuildFullNeighbors()
+        {
+            var set = new System.Collections.Generic.HashSet<(int, int, int, BoardOrientation)>();
+            var result = new System.Collections.Generic.List<Neighbor>();
+
+            void AddUnique(Neighbor[] neighbors)
+            {
+                foreach (var n in neighbors)
+                {
+                    var key = (n.Offset.x, n.Offset.y, n.Offset.z, n.Orientation);
+                    if (set.Add(key))
+                        result.Add(n);
+                }
+            }
+
+            AddUnique(XNeighbors);
+            AddUnique(YNeighbors);
+            AddUnique(ZNeighbors);
+
+            return result.ToArray();
+        }
+
         public static Neighbor[] GetNeighbors(BoardOrientation orient)
         {
+            if (orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z))
+            {
+                _fullNeighbors ??= BuildFullNeighbors();
+                return _fullNeighbors;
+            }
+
             return orient switch
             {
                 BoardOrientation.X => XNeighbors,
