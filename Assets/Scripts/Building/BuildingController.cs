@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.InputSystem;
 
@@ -8,7 +9,6 @@ namespace Building
         [Header("References")]
         [SerializeField] private Transform cameraTransform;
         [SerializeField] private BoardPreview boardPreview;
-        [SerializeField] private GameObject boardPrefab;
 
         [Header("Settings")]
         [SerializeField] private float maxPlacementDistance = 16f;
@@ -16,20 +16,55 @@ namespace Building
         [SerializeField] private LayerMask placementTriggerLayer;
         [SerializeField] private LayerMask boardLayer;
 
+        private const BoardOrientation FULL = BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z;
+
         private BuildingGrid _grid;
         private InputAction _attackAction;
         private InputAction _removeAction;
+        private InputAction _previousAction;
+        private InputAction _nextAction;
 
         // Current target state
         private bool _hasTarget;
         private Vector3Int _targetPos;
         private BoardOrientation _targetOrient;
 
+        // Active item state (set externally by bridge)
+        private GameObject _activePrefab;
+        private Inventory.PlacementMode _activePlacementMode;
+        private bool _inputEnabled = true;
+
+        /// <summary>Set by BuildingInventoryBridge when the active hotbar item changes.</summary>
+        public GameObject ActivePrefab
+        {
+            get => _activePrefab;
+            set
+            {
+                _activePrefab = value;
+                if (boardPreview != null)
+                    boardPreview.SetPreviewPrefab(value);
+            }
+        }
+
+        /// <summary>Set by BuildingInventoryBridge when the active hotbar item changes.</summary>
+        public Inventory.PlacementMode ActivePlacementMode
+        {
+            get => _activePlacementMode;
+            set => _activePlacementMode = value;
+        }
+
+        // Events for decoupled integration
+        public event Action<PlaceCancelEventArgs> OnBeforePlace;
+        public event Action<Vector3Int, BoardOrientation, GameObject> OnBoardPlaced;
+        public event Action<Vector3Int, BoardOrientation, GameObject> OnBeforeRemove;
+
         private void Awake()
         {
             var playerInput = GetComponent<PlayerInput>();
             _attackAction = playerInput.actions["Attack"];
             _removeAction = playerInput.actions["Remove"];
+            _previousAction = playerInput.actions["Previous"];
+            _nextAction = playerInput.actions["Next"];
         }
 
         private void Start()
@@ -37,21 +72,50 @@ namespace Building
             _grid = BuildingGrid.Instance;
             if (_grid == null)
                 Debug.LogError("[BuildingController] BuildingGrid.Instance not found.");
+
+            // Subscribe to MouseManager for input toggling
+            if (UI.MouseManager.Instance != null)
+                UI.MouseManager.Instance.OnCursorStateChanged += HandleCursorStateChanged;
+        }
+
+        private void OnDestroy()
+        {
+            if (UI.MouseManager.Instance != null)
+                UI.MouseManager.Instance.OnCursorStateChanged -= HandleCursorStateChanged;
+        }
+
+        private void HandleCursorStateChanged(bool isCursorFree)
+        {
+            _inputEnabled = !isCursorFree;
+            if (!_inputEnabled)
+            {
+                _hasTarget = false;
+                boardPreview.Hide();
+            }
         }
 
         private void Update()
         {
             if (_grid == null) return;
 
+            // Handle hotbar switching (always active)
+            HandleHotbarInput();
+
+            if (!_inputEnabled) return;
+
             _hasTarget = false;
 
-            if (_grid.IsEmpty())
+            // Only target for placement if we have an active prefab
+            if (_activePrefab != null)
             {
-                HandleFirstBoardTargeting();
-            }
-            else
-            {
-                HandleNormalTargeting();
+                if (_grid.IsEmpty())
+                {
+                    HandleFirstBoardTargeting();
+                }
+                else
+                {
+                    HandleNormalTargeting();
+                }
             }
 
             // Update preview
@@ -66,24 +130,76 @@ namespace Building
                 boardPreview.Hide();
             }
 
-            // Handle input
+            // Handle placement
             if (_hasTarget && _attackAction.WasPressedThisFrame())
             {
                 PlaceBoard(_targetPos, _targetOrient);
             }
 
+            // Handle removal (works even without active prefab)
             if (_removeAction.WasPressedThisFrame())
             {
                 HandleRemoval();
             }
         }
 
+        private void HandleHotbarInput()
+        {
+            // Number keys 1-9
+            for (int i = 0; i < 9; i++)
+            {
+                if (Keyboard.current != null && Keyboard.current[Key.Digit1 + i].wasPressedThisFrame)
+                {
+                    Inventory.InventoryManager.Instance?.SetActiveSlot(i);
+                    return;
+                }
+            }
+
+            // Scroll wheel
+            if (Mouse.current != null)
+            {
+                float scroll = Mouse.current.scroll.ReadValue().y;
+                if (scroll > 0 && _previousAction.WasPressedThisFrame())
+                {
+                    // Handled via Previous action
+                }
+                else if (scroll < 0 && _nextAction.WasPressedThisFrame())
+                {
+                    // Handled via Next action
+                }
+            }
+
+            // Previous/Next actions (keyboard 1/2 or gamepad dpad)
+            if (_previousAction.WasPressedThisFrame())
+            {
+                var mgr = Inventory.InventoryManager.Instance;
+                if (mgr != null)
+                {
+                    int current = mgr.Inventory.ActiveHotbarIndex;
+                    mgr.SetActiveSlot((current - 1 + Inventory.Inventory.HOTBAR_SIZE) % Inventory.Inventory.HOTBAR_SIZE);
+                }
+            }
+            if (_nextAction.WasPressedThisFrame())
+            {
+                var mgr = Inventory.InventoryManager.Instance;
+                if (mgr != null)
+                {
+                    int current = mgr.Inventory.ActiveHotbarIndex;
+                    mgr.SetActiveSlot((current + 1) % Inventory.Inventory.HOTBAR_SIZE);
+                }
+            }
+        }
+
         private void HandleFirstBoardTargeting()
         {
-            // Place at fixed distance in front of camera, snapped to grid
             Vector3 targetWorld = cameraTransform.position + cameraTransform.forward * firstBoardDistance;
             Vector3Int gridPos = WorldToGrid(targetWorld);
-            BoardOrientation orient = GetOrientationFromCamera();
+
+            BoardOrientation orient;
+            if (_activePlacementMode == Inventory.PlacementMode.FullCell)
+                orient = FULL;
+            else
+                orient = GetOrientationFromCamera();
 
             _hasTarget = true;
             _targetPos = gridPos;
@@ -101,26 +217,42 @@ namespace Building
                 {
                     _hasTarget = true;
                     _targetPos = info.GridPosition;
-                    _targetOrient = info.Orientation;
+
+                    if (_activePlacementMode == Inventory.PlacementMode.FullCell)
+                        _targetOrient = FULL;
+                    else
+                        _targetOrient = info.Orientation;
                 }
             }
         }
 
         private void PlaceBoard(Vector3Int pos, BoardOrientation orient)
         {
-            if (boardPrefab == null)
+            if (_activePrefab == null)
             {
-                Debug.LogError("[BuildingController] Board prefab not assigned.");
+                Debug.LogError("[BuildingController] No active prefab assigned.");
                 return;
             }
+
+            // Fire OnBeforePlace to allow cancellation (e.g., inventory check)
+            var args = new PlaceCancelEventArgs(pos, orient);
+            OnBeforePlace?.Invoke(args);
+            if (args.Cancel) return;
 
             Vector3 worldPos = PlacementTriggerManager.GridToWorld(pos, orient);
             Quaternion rotation = PlacementTriggerManager.GetBoardRotation(orient);
 
-            GameObject board = Instantiate(boardPrefab, worldPos, rotation);
+            GameObject board = Instantiate(_activePrefab, worldPos, rotation);
             board.name = $"Board_{pos}_{orient}";
 
-            _grid.AddBoard(pos, orient, board);
+            if (_grid.AddBoard(pos, orient, board))
+            {
+                OnBoardPlaced?.Invoke(pos, orient, board);
+            }
+            else
+            {
+                Destroy(board);
+            }
         }
 
         private void HandleRemoval()
@@ -129,10 +261,8 @@ namespace Building
 
             if (Physics.Raycast(ray, out RaycastHit hit, maxPlacementDistance, boardLayer))
             {
-                // Find which board was hit by checking all boards near the hit point
                 Vector3Int gridPos = WorldToGrid(hit.point);
 
-                // Check this cell and immediate neighbors for the hit board
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     for (int dy = -1; dy <= 1; dy++)
@@ -140,11 +270,12 @@ namespace Building
                         for (int dz = -1; dz <= 1; dz++)
                         {
                             Vector3Int checkPos = gridPos + new Vector3Int(dx, dy, dz);
-                            foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z })
+                            foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z, FULL })
                             {
                                 GameObject board = _grid.GetBoard(checkPos, orient);
                                 if (board != null && board == hit.collider.gameObject)
                                 {
+                                    OnBeforeRemove?.Invoke(checkPos, orient, board);
                                     _grid.RemoveBoard(checkPos, orient);
                                     return;
                                 }
@@ -162,11 +293,9 @@ namespace Building
             float absY = Mathf.Abs(forward.y);
             float absZ = Mathf.Abs(forward.z);
 
-            // Pick orientation whose normal most aligns with camera forward
-            // X-board normal is Z, Y-board normal is X, Z-board normal is Y
-            if (absZ >= absX && absZ >= absY) return BoardOrientation.X;  // looking along Z → XY wall
-            if (absX >= absY && absX >= absZ) return BoardOrientation.Y;  // looking along X → YZ wall
-            return BoardOrientation.Z;                                      // looking along Y → XZ floor
+            if (absZ >= absX && absZ >= absY) return BoardOrientation.X;
+            if (absX >= absY && absX >= absZ) return BoardOrientation.Y;
+            return BoardOrientation.Z;
         }
 
         private static Vector3Int WorldToGrid(Vector3 worldPos)
@@ -177,6 +306,19 @@ namespace Building
                 Mathf.FloorToInt(worldPos.y / CELL_SIZE),
                 Mathf.FloorToInt(worldPos.z / CELL_SIZE)
             );
+        }
+    }
+
+    public class PlaceCancelEventArgs : EventArgs
+    {
+        public Vector3Int Position { get; }
+        public BoardOrientation Orientation { get; }
+        public bool Cancel { get; set; }
+
+        public PlaceCancelEventArgs(Vector3Int pos, BoardOrientation orient)
+        {
+            Position = pos;
+            Orientation = orient;
         }
     }
 }
