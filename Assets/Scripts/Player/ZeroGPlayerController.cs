@@ -22,6 +22,7 @@ public class ZeroGPlayerController : MonoBehaviour
     [SerializeField] private float _lockRange = 100f;
     [SerializeField] private float _lockRadius = 2f;
     [SerializeField] private float _releaseRange = 200f;
+    [SerializeField] private LayerMask _targetLockLayers;
 
     [Header("Ground Check")]
     [SerializeField] private float _groundCheckDistance = 0.2f;
@@ -47,7 +48,7 @@ public class ZeroGPlayerController : MonoBehaviour
         _rb = GetComponent<Rigidbody>();
         _input = new ZeroGPlayerInput(GetComponent<PlayerInput>());
 
-        _targetLock = new TargetLock(_cameraTransform, _lockRange, _lockRadius, _releaseRange);
+        _targetLock = new TargetLock(_cameraTransform, _lockRange, _lockRadius, _releaseRange, _targetLockLayers);
 
         _groundedState = new GroundedState(
             _cameraTransform,

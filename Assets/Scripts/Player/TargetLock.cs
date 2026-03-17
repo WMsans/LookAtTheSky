@@ -6,6 +6,7 @@ public class TargetLock
     private readonly float _lockRange;
     private readonly float _lockRadius;
     private readonly float _releaseRange;
+    private readonly LayerMask _targetLayers;
 
     private Collider _lockedTarget;
     private Collider _currentCandidate;
@@ -15,12 +16,13 @@ public class TargetLock
     public Collider Target => _lockedTarget;
     public Vector3 TargetVelocity => GetTargetVelocity();
 
-    public TargetLock(Transform cameraTransform, float lockRange, float lockRadius, float releaseRange)
+    public TargetLock(Transform cameraTransform, float lockRange, float lockRadius, float releaseRange, LayerMask targetLayers)
     {
         _cameraTransform = cameraTransform;
         _lockRange = lockRange;
         _lockRadius = lockRadius;
         _releaseRange = releaseRange;
+        _targetLayers = targetLayers;
     }
 
     public void UpdateCandidate()
@@ -36,7 +38,8 @@ public class TargetLock
             _lockRadius,
             _cameraTransform.forward,
             out RaycastHit hit,
-            _lockRange))
+            _lockRange,
+            _targetLayers))
         {
             if (_currentCandidate != hit.collider)
             {
@@ -58,7 +61,8 @@ public class TargetLock
             _lockRadius,
             _cameraTransform.forward,
             out RaycastHit hit,
-            _lockRange))
+            _lockRange,
+            _targetLayers))
         {
             _lockedTarget = hit.collider;
             _currentCandidate = null;

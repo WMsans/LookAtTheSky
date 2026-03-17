@@ -1728,6 +1728,9 @@ MonoBehaviour:
   _lockRange: 100
   _lockRadius: 2
   _releaseRange: 200
+  _targetLockLayers:
+    serializedVersion: 2
+    m_Bits: 128
   _groundCheckDistance: 0.2
   _groundCheckRadius: 0.3
   _groundLayer:
