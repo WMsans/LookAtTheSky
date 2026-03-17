@@ -42,8 +42,19 @@ namespace Building
 
         private void HandleBoardAdded(Vector3Int pos, BoardOrientation orient)
         {
-            // Remove trigger at placed position (board now occupies it)
-            RemoveTrigger(pos, orient);
+            bool isFull = orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+
+            if (isFull)
+            {
+                // Remove all triggers at this position
+                RemoveTrigger(pos, BoardOrientation.X);
+                RemoveTrigger(pos, BoardOrientation.Y);
+                RemoveTrigger(pos, BoardOrientation.Z);
+            }
+            else
+            {
+                RemoveTrigger(pos, orient);
+            }
 
             // Generate triggers at each valid empty neighbor
             var neighbors = BoardAdjacency.GetNeighbors(orient);
@@ -61,13 +72,27 @@ namespace Building
 
         private void HandleBoardRemoved(Vector3Int pos, BoardOrientation orient)
         {
-            // Create trigger at removed position if it still has neighbors
-            if (_grid.HasAnyNeighbor(pos, orient))
+            bool isFull = orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+
+            if (isFull)
             {
-                CreateTrigger(pos, orient);
+                // Check each individual orientation for neighbors and create triggers
+                foreach (var o in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z })
+                {
+                    if (_grid.HasAnyNeighbor(pos, o))
+                    {
+                        CreateTrigger(pos, o);
+                    }
+                }
+            }
+            else
+            {
+                if (_grid.HasAnyNeighbor(pos, orient))
+                {
+                    CreateTrigger(pos, orient);
+                }
             }
 
-            // Cleanup orphaned triggers (triggers with no adjacent boards)
             CleanupOrphanedTriggers();
         }
 
