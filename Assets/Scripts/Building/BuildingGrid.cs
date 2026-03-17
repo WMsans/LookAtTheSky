@@ -8,6 +8,8 @@ namespace Building
     {
         public static BuildingGrid Instance { get; private set; }
 
+        private const BoardOrientation FULL = BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z;
+
         public event Action<Vector3Int, BoardOrientation> OnBoardAdded;
         public event Action<Vector3Int, BoardOrientation> OnBoardRemoved;
 
@@ -33,7 +35,20 @@ namespace Building
 
         public bool AddBoard(Vector3Int pos, BoardOrientation orient, GameObject boardObj)
         {
+            // Check if this exact orientation is already occupied
             if (HasBoard(pos, orient)) return false;
+
+            // FullCell conflict checks
+            if (_grid.TryGetValue(pos, out var existingFlags))
+            {
+                bool placingFull = orient == FULL;
+                bool existingHasFull = existingFlags == FULL;
+
+                // Can't place a panel where a FullCell exists
+                if (existingHasFull && !placingFull) return false;
+                // Can't place a FullCell where any panel exists
+                if (placingFull && existingFlags != BoardOrientation.None) return false;
+            }
 
             if (_grid.ContainsKey(pos))
                 _grid[pos] |= orient;
