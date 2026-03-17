@@ -56,6 +56,7 @@ namespace Building
         // Events for decoupled integration
         public event Action<PlaceCancelEventArgs> OnBeforePlace;
         public event Action<Vector3Int, BoardOrientation, GameObject> OnBoardPlaced;
+        public event Action<Vector3Int, BoardOrientation> OnPlaceFailed;
         public event Action<Vector3Int, BoardOrientation, GameObject> OnBeforeRemove;
 
         private void Awake()
@@ -238,6 +239,7 @@ namespace Building
             else
             {
                 Destroy(board);
+                OnPlaceFailed?.Invoke(pos, orient);
             }
         }
 

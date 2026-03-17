@@ -46,6 +46,7 @@ namespace Building
 
             _buildingController.OnBeforePlace += HandleBeforePlace;
             _buildingController.OnBoardPlaced += HandleBoardPlaced;
+            _buildingController.OnPlaceFailed += HandlePlaceFailed;
             _buildingController.OnBeforeRemove += HandleBeforeRemove;
 
             SyncActiveItem();
@@ -62,6 +63,7 @@ namespace Building
             {
                 _buildingController.OnBeforePlace -= HandleBeforePlace;
                 _buildingController.OnBoardPlaced -= HandleBoardPlaced;
+                _buildingController.OnPlaceFailed -= HandlePlaceFailed;
                 _buildingController.OnBeforeRemove -= HandleBeforeRemove;
             }
         }
@@ -117,6 +119,16 @@ namespace Building
             if (_pendingPlaceItem != null)
             {
                 _placedItemTracker[board] = _pendingPlaceItem;
+                _pendingPlaceItem = null;
+            }
+        }
+
+        private void HandlePlaceFailed(Vector3Int pos, BoardOrientation orient)
+        {
+            // Refund the item that was consumed in HandleBeforePlace
+            if (_pendingPlaceItem != null)
+            {
+                _inventoryManager.AddItem(_pendingPlaceItem, 1);
                 _pendingPlaceItem = null;
             }
         }
