@@ -127,6 +127,7 @@ namespace UI
             }
 
             RefreshAll();
+            _inventoryManager.Inventory.NotifyChanged();
         }
 
         private void HandleLeftClick(Inventory.ItemSlot slot)

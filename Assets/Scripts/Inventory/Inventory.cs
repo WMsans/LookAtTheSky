@@ -28,6 +28,15 @@ namespace Inventory
         public event Action OnChanged;
         public event Action<int> OnActiveSlotChanged;
 
+        /// <summary>
+        /// Notify subscribers that inventory contents changed.
+        /// Call after direct slot manipulation (e.g., UI drag/swap).
+        /// </summary>
+        public void NotifyChanged()
+        {
+            OnChanged?.Invoke();
+        }
+
         public Inventory()
         {
             Hotbar = new ItemSlot[HOTBAR_SIZE];
