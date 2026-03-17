@@ -60,6 +60,8 @@ namespace Inventory
         /// </summary>
         public int AddItem(BuildingItemSO item, int count)
         {
+            if (item == null || count <= 0) return count;
+
             int remaining = count;
 
             // First pass: fill existing stacks in hotbar
@@ -87,6 +89,8 @@ namespace Inventory
         /// </summary>
         public bool RemoveItem(BuildingItemSO item, int count)
         {
+            if (item == null || count <= 0) return false;
+
             int available = CountItem(item);
             if (available < count) return false;
 
