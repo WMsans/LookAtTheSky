@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.InputSystem;
 using UnityEngine.UI;
 using TMPro;
 
@@ -27,9 +28,9 @@ namespace UI
         private void Update()
         {
             if (!IsHolding) return;
+            if (Mouse.current == null) return;
 
-            // Follow mouse position
-            Vector2 mousePos = Input.mousePosition;
+            Vector2 mousePos = Mouse.current.position.ReadValue();
             if (_parentCanvas.renderMode == RenderMode.ScreenSpaceOverlay)
             {
                 _rectTransform.position = mousePos;
