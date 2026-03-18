@@ -138,6 +138,8 @@ public class ZeroGPlayerController : MonoBehaviour
 
     private void UpdateCamera()
     {
+        if (UI.MouseManager.Instance != null && UI.MouseManager.Instance.IsCursorFree) return;
+
         if (_playerCamera != null)
         {
             _playerCamera.UpdateLook(_input.Look, _input.RollHeld);
