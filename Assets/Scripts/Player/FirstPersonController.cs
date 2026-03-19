@@ -35,8 +35,7 @@ namespace Player
 
         private void Start()
         {
-            Cursor.lockState = CursorLockMode.Locked;
-            Cursor.visible = false;
+            // Cursor state is now managed by MouseManager
         }
 
         private void Update()
@@ -47,6 +46,9 @@ namespace Player
 
         private void HandleLook()
         {
+            // Don't process look when cursor is free (UI is open)
+            if (UI.MouseManager.Instance != null && UI.MouseManager.Instance.IsCursorFree) return;
+
             Vector2 lookDelta = _lookAction.ReadValue<Vector2>();
 
             _cameraPitch -= lookDelta.y * mouseSensitivity;
