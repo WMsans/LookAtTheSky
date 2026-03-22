@@ -33,6 +33,7 @@ uint _NodeOffset;
 uint _PayloadOffset;
 uint _BrickOffset;
 int _NumDynamicObjects;
+int _GenerationMode; // 0 = terrain (default), 1 = asteroid
 
 // Mipmapping Uniforms
 uint _TargetLevelOffset;
@@ -176,7 +177,15 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
     }
 
     float worldRadius = 3.0 * scale;
-    GenerationContext centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0);
+    GenerationContext centerCtx;
+    if (_GenerationMode == 1)
+    {
+        centerCtx = RunAsteroidPipeline(brickCenterWorld);
+    }
+    else
+    {
+        centerCtx = RunGeneratorPipeline(brickCenterWorld, activeObjects, 0);
+    }
     ApplyEdits(centerCtx, brickCenterWorld, scale);
     ApplyDynamicObjects(centerCtx, brickCenterWorld, activeObjects, activeCount);
     
@@ -200,7 +209,15 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
                     // Generate without writing
-                    GenerationContext vCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    GenerationContext vCtx;
+                    if (_GenerationMode == 1)
+                    {
+                        vCtx = RunAsteroidPipeline(voxelPosWorld);
+                    }
+                    else
+                    {
+                        vCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    }
                     ApplyEdits(vCtx, voxelPosWorld, scale);
                     ApplyDynamicObjects(vCtx, voxelPosWorld, activeObjects, activeCount);
                     
@@ -253,7 +270,15 @@ void BuildBricks(uint3 id : SV_DispatchThreadID)
                     float3 voxelPosLocal = brickOriginLocal + (float3)voxelOffset;
                     float3 voxelPosWorld = _ChunkWorldOrigin + (voxelPosLocal * scale);
                     
-                    GenerationContext voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    GenerationContext voxelCtx;
+                    if (_GenerationMode == 1)
+                    {
+                        voxelCtx = RunAsteroidPipeline(voxelPosWorld);
+                    }
+                    else
+                    {
+                        voxelCtx = RunGeneratorPipeline(voxelPosWorld, activeObjects, 0);
+                    }
                     ApplyEdits(voxelCtx, voxelPosWorld, scale);
                     ApplyDynamicObjects(voxelCtx, voxelPosWorld, activeObjects, activeCount);
                     
