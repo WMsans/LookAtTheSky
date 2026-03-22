@@ -22,7 +22,7 @@ namespace VoxelEngine.Core.Generators
             }
         }
 
-        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize, bool empty = false)
+        public static void Build(ComputeShader shader, SVOBufferManager buffers, int resolution, Vector3 chunkOrigin, float chunkSize, bool empty = false, int generationMode = 0)
         {
             if (shader == null || buffers == null) return;
             EnsureKernels(shader);
@@ -72,6 +72,7 @@ namespace VoxelEngine.Core.Generators
             shader.SetInt("_GridSize", resolution); 
             shader.SetVector("_ChunkWorldOrigin", chunkOrigin);
             shader.SetFloat("_ChunkWorldSize", chunkSize);
+            shader.SetInt("_GenerationMode", generationMode);
 
             // --- Prepare Edits ---
             var editManager = VoxelEditManager.Instance;
