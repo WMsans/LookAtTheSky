@@ -7,6 +7,7 @@
 #include "./Generators/SineFloor.hlsl"
 #include "./Generators/Trees.hlsl"
 #include "./Generators/OakTrees.hlsl"
+#include "./Generators/AsteroidGenerator.hlsl"
 
 // --- Global Dynamic SDF Resources ---
 // These are bound by VoxelVolume or DynamicSDFManager
