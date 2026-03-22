@@ -62,5 +62,19 @@ namespace Building
                 _ => new UnityEngine.Vector3Int[] { anchor }
             };
         }
+
+        /// <summary>
+        /// Convert a small block's single-cell grid position to its world-space center.
+        /// Small blocks occupy 1 cell = CELL_SIZE^3 world units.
+        /// </summary>
+        public static UnityEngine.Vector3 SmallBlockGridToWorld(UnityEngine.Vector3Int cell)
+        {
+            float half = CELL_SIZE / 2f;
+            return new UnityEngine.Vector3(
+                cell.x * CELL_SIZE + half,
+                cell.y * CELL_SIZE + half,
+                cell.z * CELL_SIZE + half
+            );
+        }
     }
 }
