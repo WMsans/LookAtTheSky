@@ -5,7 +5,7 @@ namespace Building
 {
     public class PlacementTriggerManager : MonoBehaviour
     {
-        private const float CELL_SIZE = 4f;
+        private const BoardOrientation FULL = BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z;
 
         private BuildingGrid _grid;
         private Dictionary<Vector3Int, Dictionary<BoardOrientation, GameObject>> _triggers = new();
@@ -40,101 +40,101 @@ namespace Building
             }
         }
 
-        private void HandleBoardAdded(Vector3Int pos, BoardOrientation orient)
+        private void HandleBoardAdded(Vector3Int anchor, BoardOrientation orient)
         {
-            bool isFull = orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+            bool isFull = orient == FULL;
 
             if (isFull)
             {
-                // Remove all triggers at this position
-                RemoveTrigger(pos, BoardOrientation.X);
-                RemoveTrigger(pos, BoardOrientation.Y);
-                RemoveTrigger(pos, BoardOrientation.Z);
+                // Remove all triggers at this anchor
+                RemoveTrigger(anchor, BoardOrientation.X);
+                RemoveTrigger(anchor, BoardOrientation.Y);
+                RemoveTrigger(anchor, BoardOrientation.Z);
             }
             else
             {
-                RemoveTrigger(pos, orient);
+                RemoveTrigger(anchor, orient);
             }
 
-            // Generate triggers at each valid empty neighbor
+            // Generate triggers at each valid empty neighbor anchor
             var neighbors = BoardAdjacency.GetNeighbors(orient);
             foreach (var n in neighbors)
             {
-                Vector3Int neighborPos = pos + n.Offset;
+                Vector3Int neighborAnchor = anchor + n.Offset;
                 BoardOrientation neighborOrient = n.Orientation;
 
-                if (!_grid.HasBoard(neighborPos, neighborOrient))
+                if (!_grid.HasBoard(neighborAnchor, neighborOrient))
                 {
-                    CreateTrigger(neighborPos, neighborOrient);
+                    CreateTrigger(neighborAnchor, neighborOrient);
                 }
             }
         }
 
-        private void HandleBoardRemoved(Vector3Int pos, BoardOrientation orient)
+        private void HandleBoardRemoved(Vector3Int anchor, BoardOrientation orient)
         {
-            bool isFull = orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+            bool isFull = orient == FULL;
 
             if (isFull)
             {
-                // Check each individual orientation for neighbors and create triggers
                 foreach (var o in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z })
                 {
-                    if (_grid.HasAnyNeighbor(pos, o))
+                    if (_grid.HasAnyNeighbor(anchor, o))
                     {
-                        CreateTrigger(pos, o);
+                        CreateTrigger(anchor, o);
                     }
                 }
             }
             else
             {
-                if (_grid.HasAnyNeighbor(pos, orient))
+                if (_grid.HasAnyNeighbor(anchor, orient))
                 {
-                    CreateTrigger(pos, orient);
+                    CreateTrigger(anchor, orient);
                 }
             }
 
             CleanupOrphanedTriggers();
         }
 
-        private void CreateTrigger(Vector3Int pos, BoardOrientation orient)
+        private void CreateTrigger(Vector3Int anchor, BoardOrientation orient)
         {
-            if (HasTrigger(pos, orient)) return;
+            if (HasTrigger(anchor, orient)) return;
 
-            GameObject trigger = new GameObject($"Trigger_{pos}_{orient}");
+            GameObject trigger = new GameObject($"Trigger_{anchor}_{orient}");
             trigger.transform.SetParent(transform);
             trigger.layer = _placementLayer;
 
-            trigger.transform.position = GridToWorld(pos, orient);
+            trigger.transform.position = GridToWorld(anchor, orient);
             trigger.transform.rotation = GetBoardRotation(orient);
 
             BoxCollider collider = trigger.AddComponent<BoxCollider>();
             collider.isTrigger = true;
-            collider.size = new Vector3(CELL_SIZE, 0.1f, CELL_SIZE);
+            // Trigger collider matches board world size (4x0.1x4), not cell size
+            collider.size = new Vector3(GridConstants.BOARD_WORLD_SIZE, 0.1f, GridConstants.BOARD_WORLD_SIZE);
 
             TriggerInfo info = trigger.AddComponent<TriggerInfo>();
-            info.GridPosition = pos;
+            info.GridPosition = anchor;
             info.Orientation = orient;
 
-            if (!_triggers.ContainsKey(pos))
-                _triggers[pos] = new Dictionary<BoardOrientation, GameObject>();
-            _triggers[pos][orient] = trigger;
+            if (!_triggers.ContainsKey(anchor))
+                _triggers[anchor] = new Dictionary<BoardOrientation, GameObject>();
+            _triggers[anchor][orient] = trigger;
         }
 
-        private void RemoveTrigger(Vector3Int pos, BoardOrientation orient)
+        private void RemoveTrigger(Vector3Int anchor, BoardOrientation orient)
         {
-            if (!_triggers.TryGetValue(pos, out var orientDict)) return;
+            if (!_triggers.TryGetValue(anchor, out var orientDict)) return;
             if (!orientDict.TryGetValue(orient, out var trigger)) return;
 
             if (trigger != null) Destroy(trigger);
             orientDict.Remove(orient);
 
             if (orientDict.Count == 0)
-                _triggers.Remove(pos);
+                _triggers.Remove(anchor);
         }
 
-        private bool HasTrigger(Vector3Int pos, BoardOrientation orient)
+        private bool HasTrigger(Vector3Int anchor, BoardOrientation orient)
         {
-            return _triggers.TryGetValue(pos, out var orientDict) && orientDict.ContainsKey(orient);
+            return _triggers.TryGetValue(anchor, out var orientDict) && orientDict.ContainsKey(orient);
         }
 
         private void CleanupOrphanedTriggers()
@@ -152,9 +152,9 @@ namespace Building
                 }
             }
 
-            foreach (var (pos, orient) in toRemove)
+            foreach (var (anchor, orient) in toRemove)
             {
-                RemoveTrigger(pos, orient);
+                RemoveTrigger(anchor, orient);
             }
         }
 
@@ -170,28 +170,38 @@ namespace Building
             _triggers.Clear();
         }
 
-        public static Vector3 GridToWorld(Vector3Int gridPos, BoardOrientation orient)
+        /// <summary>
+        /// Convert an anchor grid position to world-space center of the board.
+        /// Board spans BOARD_SPAN cells (2) in each planar axis, so center is offset
+        /// by half the board world size (2 units) along each planar axis.
+        /// </summary>
+        public static Vector3 GridToWorld(Vector3Int anchor, BoardOrientation orient)
         {
-            Vector3 basePos = (Vector3)gridPos * CELL_SIZE;
+            float cs = GridConstants.CELL_SIZE;
+            float half = GridConstants.BOARD_WORLD_SIZE / 2f; // 2 units
+
+            Vector3 basePos = new Vector3(anchor.x * cs, anchor.y * cs, anchor.z * cs);
 
             return orient switch
             {
-                BoardOrientation.X => basePos + new Vector3(CELL_SIZE / 2f, CELL_SIZE / 2f, 0f),
-                BoardOrientation.Y => basePos + new Vector3(0f, CELL_SIZE / 2f, CELL_SIZE / 2f),
-                BoardOrientation.Z => basePos + new Vector3(CELL_SIZE / 2f, 0f, CELL_SIZE / 2f),
-                _ => basePos + new Vector3(CELL_SIZE / 2f, CELL_SIZE / 2f, CELL_SIZE / 2f)
+                // X-board (XY plane): center in X and Y, at z face
+                BoardOrientation.X => basePos + new Vector3(half, half, 0f),
+                // Y-board (YZ plane): center in Y and Z, at x face
+                BoardOrientation.Y => basePos + new Vector3(0f, half, half),
+                // Z-board (XZ plane): center in X and Z, at y face
+                BoardOrientation.Z => basePos + new Vector3(half, 0f, half),
+                // FullCell: center in all axes
+                _ => basePos + new Vector3(half, half, half)
             };
         }
 
         public static Quaternion GetBoardRotation(BoardOrientation orient)
         {
-            // Board prefab & trigger collider are flat in local XZ (thin along Y).
-            // Rotate so the flat face matches the board's plane:
             return orient switch
             {
-                BoardOrientation.X => Quaternion.Euler(90f, 0f, 0f),             // XZ → XY plane (vertical wall facing Z)
-                BoardOrientation.Y => Quaternion.Euler(0f, 0f, 90f),             // XZ → YZ plane (vertical wall facing X)
-                BoardOrientation.Z => Quaternion.identity,                        // XZ stays XZ (horizontal floor)
+                BoardOrientation.X => Quaternion.Euler(90f, 0f, 0f),
+                BoardOrientation.Y => Quaternion.Euler(0f, 0f, 90f),
+                BoardOrientation.Z => Quaternion.identity,
                 _ => Quaternion.identity
             };
         }
