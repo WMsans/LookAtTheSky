@@ -12563,6 +12563,8 @@ MonoBehaviour:
   _startingItems:
   - item: {fileID: 11400000, guid: e2b3552ca2e0de92a95053d82627b5b0, type: 2}
     count: 64
+  - item: {fileID: 11400000, guid: 16b531a56e62819e7b5d2ea7a1a61d8e, type: 2}
+    count: 64
 --- !u!4 &1294317519
 Transform:
   m_ObjectHideFlags: 0
