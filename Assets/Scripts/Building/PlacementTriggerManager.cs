@@ -27,26 +27,29 @@ namespace Building
                 return;
             }
 
-            _grid.OnBoardAdded += HandleBoardAdded;
-            _grid.OnBoardRemoved += HandleBoardRemoved;
+            _grid.OnOccupantAdded += HandleOccupantAdded;
+            _grid.OnOccupantRemoved += HandleOccupantRemoved;
         }
 
         private void OnDestroy()
         {
             if (_grid != null)
             {
-                _grid.OnBoardAdded -= HandleBoardAdded;
-                _grid.OnBoardRemoved -= HandleBoardRemoved;
+                _grid.OnOccupantAdded -= HandleOccupantAdded;
+                _grid.OnOccupantRemoved -= HandleOccupantRemoved;
             }
         }
 
-        private void HandleBoardAdded(Vector3Int anchor, BoardOrientation orient)
+        private void HandleOccupantAdded(IOccupant occupant)
         {
+            if (occupant is not BoardOccupant board) return;
+
+            var anchor = board.Anchor;
+            var orient = board.Orientation;
             bool isFull = orient == FULL;
 
             if (isFull)
             {
-                // Remove all triggers at this anchor
                 RemoveTrigger(anchor, BoardOrientation.X);
                 RemoveTrigger(anchor, BoardOrientation.Y);
                 RemoveTrigger(anchor, BoardOrientation.Z);
@@ -56,7 +59,6 @@ namespace Building
                 RemoveTrigger(anchor, orient);
             }
 
-            // Generate triggers at each valid empty neighbor anchor
             var neighbors = BoardAdjacency.GetNeighbors(orient);
             foreach (var n in neighbors)
             {
@@ -70,8 +72,12 @@ namespace Building
             }
         }
 
-        private void HandleBoardRemoved(Vector3Int anchor, BoardOrientation orient)
+        private void HandleOccupantRemoved(IOccupant occupant)
         {
+            if (occupant is not BoardOccupant board) return;
+
+            var anchor = board.Anchor;
+            var orient = board.Orientation;
             bool isFull = orient == FULL;
 
             if (isFull)
