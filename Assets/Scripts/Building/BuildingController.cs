@@ -249,22 +249,42 @@ namespace Building
 
             if (Physics.Raycast(ray, out RaycastHit hit, maxPlacementDistance, boardLayer))
             {
-                Vector3Int gridPos = WorldToGrid(hit.point);
+                Vector3Int cell = WorldToGrid(hit.point);
 
+                // Try each orientation to find which board owns this cell
+                foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z, FULL })
+                {
+                    Vector3Int? anchor = _grid.GetAnchor(cell, orient);
+                    if (!anchor.HasValue) continue;
+
+                    GameObject board = _grid.GetBoard(anchor.Value, orient);
+                    if (board != null && board == hit.collider.gameObject)
+                    {
+                        OnBeforeRemove?.Invoke(anchor.Value, orient, board);
+                        _grid.RemoveBoard(anchor.Value, orient);
+                        return;
+                    }
+                }
+
+                // Fallback: check immediate neighboring cells (hit point may land on cell boundary)
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     for (int dy = -1; dy <= 1; dy++)
                     {
                         for (int dz = -1; dz <= 1; dz++)
                         {
-                            Vector3Int checkPos = gridPos + new Vector3Int(dx, dy, dz);
+                            if (dx == 0 && dy == 0 && dz == 0) continue;
+                            Vector3Int checkCell = cell + new Vector3Int(dx, dy, dz);
                             foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z, FULL })
                             {
-                                GameObject board = _grid.GetBoard(checkPos, orient);
+                                Vector3Int? anchor = _grid.GetAnchor(checkCell, orient);
+                                if (!anchor.HasValue) continue;
+
+                                GameObject board = _grid.GetBoard(anchor.Value, orient);
                                 if (board != null && board == hit.collider.gameObject)
                                 {
-                                    OnBeforeRemove?.Invoke(checkPos, orient, board);
-                                    _grid.RemoveBoard(checkPos, orient);
+                                    OnBeforeRemove?.Invoke(anchor.Value, orient, board);
+                                    _grid.RemoveBoard(anchor.Value, orient);
                                     return;
                                 }
                             }
@@ -288,11 +308,10 @@ namespace Building
 
         private static Vector3Int WorldToGrid(Vector3 worldPos)
         {
-            const float CELL_SIZE = 4f;
             return new Vector3Int(
-                Mathf.FloorToInt(worldPos.x / CELL_SIZE),
-                Mathf.FloorToInt(worldPos.y / CELL_SIZE),
-                Mathf.FloorToInt(worldPos.z / CELL_SIZE)
+                Mathf.FloorToInt(worldPos.x / GridConstants.CELL_SIZE),
+                Mathf.FloorToInt(worldPos.y / GridConstants.CELL_SIZE),
+                Mathf.FloorToInt(worldPos.z / GridConstants.CELL_SIZE)
             );
         }
     }
