@@ -1,0 +1,333 @@
+#pragma kernel AnalyzeBricks
+#pragma kernel InitLabels
+#pragma kernel CheckNeighborBoundary
+#pragma kernel PropagateLabels
+#pragma kernel CollectDebris
+
+#include "../Shared/Shaders/Includes/VoxelStructures.hlsl"
+
+struct DebrisVoxel {
+    float3 position;
+    uint label;
+};
+
+StructuredBuffer<SVONode> _GlobalNodeBuffer;
+StructuredBuffer<VoxelPayload> _GlobalPayloadBuffer;
+StructuredBuffer<uint> _GlobalBrickDataBuffer;
+StructuredBuffer<uint> _PageTableBuffer;
+
+RWStructuredBuffer<uint> _TopologyBuffer;
+RWStructuredBuffer<uint> _LabelBuffer;
+RWStructuredBuffer<uint> _ActiveBrickBuffer;
+RWStructuredBuffer<uint> _ActiveBrickCountBuffer;
+StructuredBuffer<uint> _ActiveBricksInput;
+RWStructuredBuffer<DebrisVoxel> _DebrisVoxelOutput;
+RWStructuredBuffer<uint> _DebrisCountBuffer;
+RWStructuredBuffer<uint> _ChangeFlagBuffer;
+
+uint _Resolution; 
+uint _PageTableOffset;
+uint _BrickOffset;
+float _GroundThresholdY;
+
+// --- Generic Neighbor References (Reused for all directions) ---
+StructuredBuffer<SVONode> _NeighborNodeBuffer;
+StructuredBuffer<VoxelPayload> _NeighborPayloadBuffer;
+StructuredBuffer<uint> _NeighborBrickDataBuffer;
+StructuredBuffer<uint> _NeighborPageTableBuffer;
+uint _NeighborPageTableOffset;
+uint _NeighborBrickOffset;
+uint _NeighborResolution;
+int3 _FaceNormal; // Direction pointing TO the neighbor (e.g. 0,-1,0 for Down)
+
+uint GetPhysIdx(uint virtualIndex)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = _PageTableBuffer[_PageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
+
+uint GetNeighborPhysIdx(uint virtualIndex)
+{
+    uint pageID = virtualIndex / PAGE_SIZE;
+    uint offsetInPage = virtualIndex % PAGE_SIZE;
+    uint physicalPageStart = _NeighborPageTableBuffer[_NeighborPageTableOffset + pageID];
+    return physicalPageStart + offsetInPage;
+}
+
+bool IsSolid(uint idx)
+{
+    return (_TopologyBuffer[idx / 32u] & (1u << (idx % 32u))) != 0;
+}
+
+// Checks if a voxel in the neighbor volume is solid
+bool IsNeighborSolid(uint3 neighborPos)
+{
+    // Safety check for resolution scaling artifacts
+    if (any(neighborPos >= _NeighborResolution)) return true; // Assume solid if out of bounds (safe fail)
+
+    // Direct leaf lookup using dense SVO layout
+    uint3 brickCoord = neighborPos / BRICK_SIZE;
+    uint nodeIndex = GetNodeIndex(4, brickCoord);
+    SVONode leafNode = _NeighborNodeBuffer[GetNeighborPhysIdx(nodeIndex)];
+
+    bool isSolidNode = (leafNode.packedInfo & NODE_FLAG_SOLID) != 0;
+    if (isSolidNode) return true;
+
+    uint payloadIndex, matID;
+    UnpackNode(leafNode, payloadIndex, matID);
+    
+    if (payloadIndex == 0) return false;
+
+    VoxelPayload payload = _NeighborPayloadBuffer[GetNeighborPhysIdx(payloadIndex)];
+    uint brickPtr = payload.brickDataIndex;
+    
+    if (brickPtr == 0) return false;
+
+    uint3 voxelLocal = neighborPos % BRICK_SIZE;
+    
+    // Apply padding offset (1)
+    uint3 p = voxelLocal + 1u;
+    uint idx = _NeighborBrickOffset + brickPtr + 
+               p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
+               p.y * BRICK_STORAGE_SIZE + 
+               p.x;
+               
+    float s; float3 n; uint m;
+    UnpackVoxelData(_NeighborBrickDataBuffer[idx], s, n, m);
+    
+    return (s < 0.01f);
+}
+
+[numthreads(4, 4, 4)]
+void AnalyzeBricks(uint3 id : SV_DispatchThreadID)
+{
+    // id is the BRICK coordinate (0 .. Res/4)
+    uint bricksPerDim = _Resolution / BRICK_SIZE;
+    if (any(id >= bricksPerDim)) return;
+
+    // Direct leaf lookup using dense SVO layout (matches grass/physics pattern)
+    uint nodeIndex = GetNodeIndex(4, id);
+    SVONode leafNode = _GlobalNodeBuffer[GetPhysIdx(nodeIndex)];
+
+    // Check if this brick has any data
+    uint payloadIndex, matID;
+    UnpackNode(leafNode, payloadIndex, matID);
+    bool isSolidNode = (leafNode.packedInfo & NODE_FLAG_SOLID) != 0;
+
+    if (!isSolidNode && payloadIndex == 0) return; // Empty brick
+
+    uint packedBrickCoord = id.x | (id.y << 10) | (id.z << 20);
+    uint appendIdx;
+    InterlockedAdd(_ActiveBrickCountBuffer[0], 1u, appendIdx);
+    _ActiveBrickBuffer[appendIdx] = packedBrickCoord;
+
+    uint brickPtr = 0;
+    if (!isSolidNode && payloadIndex != 0)
+    {
+        VoxelPayload payload = _GlobalPayloadBuffer[GetPhysIdx(payloadIndex)];
+        brickPtr = payload.brickDataIndex;
+    }
+    
+    for (uint z = 0; z < BRICK_SIZE; z++)
+    for (uint y = 0; y < BRICK_SIZE; y++)
+    for (uint x = 0; x < BRICK_SIZE; x++)
+    {
+        uint3 voxelLocal = uint3(x, y, z);
+        uint3 voxelGlobal = id * BRICK_SIZE + voxelLocal;
+        
+        bool isVoxelSolid = false;
+        if (isSolidNode)
+        {
+            isVoxelSolid = true;
+        }
+        else if (brickPtr != 0)
+        {
+            uint3 p = voxelLocal + 1u;
+            uint idx = _BrickOffset + brickPtr + 
+                       p.z * BRICK_STORAGE_SIZE * BRICK_STORAGE_SIZE + 
+                       p.y * BRICK_STORAGE_SIZE + 
+                       p.x;
+            float s; float3 n; uint m;
+            UnpackVoxelData(_GlobalBrickDataBuffer[idx], s, n, m);
+            if (s < 0.01f) isVoxelSolid = true;
+        }
+        
+        if (isVoxelSolid)
+        {
+            uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+            uint wordIdx = flatIdx / 32u;
+            uint bitIdx = flatIdx % 32u;
+            InterlockedOr(_TopologyBuffer[wordIdx], 1u << bitIdx);
+        }
+    }
+}
+
+// Phase 2: InitLabels (Simplified to Internal Ground Check Only)
+[numthreads(4, 4, 4)]
+void InitLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    if (IsSolid(flatIdx))
+    {
+        // 1. Check if below ground threshold (Physical Ground)
+        if ((float)voxelGlobal.y <= _GroundThresholdY)
+        {
+            _LabelBuffer[flatIdx] = 0; // Stable
+        }
+        else
+        {
+            _LabelBuffer[flatIdx] = flatIdx + 1; // Floating candidate
+        }
+    }
+    else
+    {
+        _LabelBuffer[flatIdx] = ~0u; // Air
+    }
+}
+
+// Phase 2: New Kernel for Neighbor Boundary Checks (Multi-Pass)
+[numthreads(4, 4, 4)]
+void CheckNeighborBoundary(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    // Only check solid voxels that are currently marked as Floating
+    uint currentLabel = _LabelBuffer[flatIdx];
+    if (currentLabel == 0 || currentLabel == ~0u) return;
+
+    // Boundary Check Logic based on _FaceNormal
+    bool onBoundary = false;
+    
+    if (_FaceNormal.x == -1)      onBoundary = (voxelGlobal.x == 0);
+    else if (_FaceNormal.x == 1)  onBoundary = (voxelGlobal.x == _Resolution - 1);
+    else if (_FaceNormal.y == -1) onBoundary = (voxelGlobal.y == 0);
+    else if (_FaceNormal.y == 1)  onBoundary = (voxelGlobal.y == _Resolution - 1);
+    else if (_FaceNormal.z == -1) onBoundary = (voxelGlobal.z == 0);
+    else if (_FaceNormal.z == 1)  onBoundary = (voxelGlobal.z == _Resolution - 1);
+    
+    if (!onBoundary) return;
+
+    // Calculate Neighbor Coordinate
+    // Handle Resolution Mismatch (LOD)
+    float ratio = (float)_NeighborResolution / (float)_Resolution;
+    
+    // Project current coord to neighbor scale
+    uint3 projected = (uint3)(float3(voxelGlobal) * ratio);
+    
+    // Determine coordinate on the neighbor's touching face
+    uint3 neighborPos = projected;
+
+    if (_FaceNormal.x == -1)      neighborPos.x = _NeighborResolution - 1; // Touching Right Face of Left Neighbor
+    else if (_FaceNormal.x == 1)  neighborPos.x = 0;                       // Touching Left Face of Right Neighbor
+    else if (_FaceNormal.y == -1) neighborPos.y = _NeighborResolution - 1; // Touching Top Face of Bottom Neighbor
+    else if (_FaceNormal.y == 1)  neighborPos.y = 0;                       // Touching Bottom Face of Top Neighbor
+    else if (_FaceNormal.z == -1) neighborPos.z = _NeighborResolution - 1; // Touching Front Face of Back Neighbor
+    else if (_FaceNormal.z == 1)  neighborPos.z = 0;                       // Touching Back Face of Front Neighbor
+    
+    // Clamp other axes just in case
+    neighborPos = min(neighborPos, uint3(_NeighborResolution-1, _NeighborResolution-1, _NeighborResolution-1));
+
+    if (IsNeighborSolid(neighborPos))
+    {
+        _LabelBuffer[flatIdx] = 0; // Mark as Stable (connected to solid neighbor)
+    }
+}
+
+[numthreads(4, 4, 4)]
+void PropagateLabels(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    uint myLabel = _LabelBuffer[flatIdx];
+    if (myLabel == ~0u) return;
+
+    uint res = _Resolution;
+    uint resSq = res * res;
+    uint minLabel = myLabel;
+
+    // Check 6 face-neighbors inline (avoids local array which can miscompile on Vulkan SPIR-V)
+    // +X
+    if (voxelGlobal.x + 1u < res)
+    {
+        uint nLabel = _LabelBuffer[flatIdx + 1u];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    // -X
+    if (voxelGlobal.x > 0u)
+    {
+        uint nLabel = _LabelBuffer[flatIdx - 1u];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    // +Y
+    if (voxelGlobal.y + 1u < res)
+    {
+        uint nLabel = _LabelBuffer[flatIdx + res];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    // -Y
+    if (voxelGlobal.y > 0u)
+    {
+        uint nLabel = _LabelBuffer[flatIdx - res];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    // +Z
+    if (voxelGlobal.z + 1u < res)
+    {
+        uint nLabel = _LabelBuffer[flatIdx + resSq];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    // -Z
+    if (voxelGlobal.z > 0u)
+    {
+        uint nLabel = _LabelBuffer[flatIdx - resSq];
+        if (nLabel != ~0u && nLabel < minLabel) minLabel = nLabel;
+    }
+    
+    if (minLabel < myLabel)
+    {
+        InterlockedMin(_LabelBuffer[flatIdx], minLabel);
+        // Use atomic write for cross-workgroup visibility (required by Vulkan memory model)
+        InterlockedOr(_ChangeFlagBuffer[0], 1u);
+    }
+}
+
+[numthreads(4, 4, 4)]
+void CollectDebris(uint3 groupID : SV_GroupID, uint3 threadID : SV_GroupThreadID)
+{
+    uint packedBrick = _ActiveBricksInput[groupID.x];
+    uint3 brickCoord = uint3(packedBrick & 0x3FFu, (packedBrick >> 10) & 0x3FFu, (packedBrick >> 20) & 0x3FFu);
+    uint3 voxelGlobal = brickCoord * BRICK_SIZE + threadID;
+    
+    if (any(voxelGlobal >= _Resolution)) return;
+    uint flatIdx = voxelGlobal.z * _Resolution * _Resolution + voxelGlobal.y * _Resolution + voxelGlobal.x;
+    
+    uint label = _LabelBuffer[flatIdx];
+    if (label != 0 && label != ~0u)
+    {
+        uint debrisIdx;
+        InterlockedAdd(_DebrisCountBuffer[0], 1u, debrisIdx);
+        DebrisVoxel d;
+        d.position = float3(voxelGlobal);
+        d.label = label;
+        _DebrisVoxelOutput[debrisIdx] = d;
+    }
+}

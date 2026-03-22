@@ -1,0 +1,197 @@
+#pragma kernel CSMain
+
+#include "Packages/com.unity.render-pipelines.core/ShaderLibrary/Common.hlsl"
+#include "../../../Shared/Shaders/Includes/VoxelStructures.hlsl"
+#include "Includes/VoxelBuffers.hlsl"
+#include "Includes/RaytraceCommon.hlsl"
+#include "Includes/VoxelSampling.hlsl"
+#include "Includes/PBRLighting.hlsl"
+#include "Includes/Triplanar.hlsl"
+#include "Includes/SVOTraversal.hlsl"
+
+[numthreads(8, 8, 1)]
+void CSMain (uint3 id : SV_DispatchThreadID)
+{
+    uint width, height; 
+    _Result.GetDimensions(width, height);
+    if (id.x >= width || id.y >= height) return;
+
+    if (_ChunkCount == 0) 
+    {
+        float2 uv = (id.xy + 0.5) / float2(width, height) * 2.0 - 1.0;
+        float2 sampleUV = uv * 0.5 + 0.5;
+        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+        
+        // [FIX] Sample Camera Depth instead of hardcoding 0.0
+        float d = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, sampleUV, 0);
+        _ResultDepth[id.xy] = d;
+        
+        _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
+        _MotionVectorTexture[id.xy] = 0;
+        return;
+    }
+    float2 jitter = _RaytraceParams.yz;
+    float2 uv = (id.xy + 0.5 + jitter) / float2(width, height) * 2.0 - 1.0;
+    float4 viewRay = mul(_CameraInverseProjection, float4(uv, 0.0, 1.0));
+    float3 rayDir = normalize(mul((float3x3)_CameraToWorld, viewRay.xyz));
+    float3 rayOrigin = _CameraToWorld._m03_m13_m23;
+    float depthVal = _CameraDepthTexture.SampleLevel(sampler_CameraDepthTexture, (id.xy + 0.5) / float2(width, height), 0);
+    float linearDepth = 1.0 / (_ZBufferParams.z * depthVal + _ZBufferParams.w);
+    float3 forward = normalize(mul((float3x3)_CameraToWorld, float3(0, 0, 1)));
+    float maxDist = linearDepth / max(dot(rayDir, forward), 0.0001);
+    float dither = GetDither(id.xy);
+    
+    rayOrigin += rayDir * dither * 0.05;
+    float3 resultColor = 0;
+    float3 throughput = 1;
+    HitInfo primaryHit = (HitInfo)0;
+    bool anyPrimaryHit = false;
+    float currentMaxDist = maxDist;
+    float2 tScene = IntersectBox(rayOrigin, rayDir, _TLASBoundsMin, _TLASBoundsMax);
+    if (tScene.x > 0 && maxDist < tScene.x)
+    {
+        float2 sampleUV = (id.xy + 0.5) / float2(width, height);
+        _Result[id.xy] = float4(_SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb, 1.0);
+        
+        _ResultDepth[id.xy] = depthVal; 
+        
+        return;
+    }
+
+    for (int bounce = 0; bounce < _BounceCount; bounce++)
+    {
+        HitInfo hit = TraceScene(rayOrigin, rayDir, currentMaxDist);
+        if (!hit.hit)
+        {
+            if (bounce == 0)
+            {
+                float2 sampleUV = (id.xy + 0.5) / float2(width, height);
+                resultColor = _SourceTex.SampleLevel(sampler_LinearRepeat, sampleUV, 0).rgb;
+            }
+            else
+            {
+                resultColor += throughput * GetSkyColor(rayDir);
+            }
+            break;
+        }
+
+        if (bounce == 0)
+        {
+            primaryHit = hit;
+            anyPrimaryHit = true;
+        }
+
+        // Material sampling
+        float3 albedo, normal;
+        float roughness, ao, metallic;
+        if (hit.isLOD) 
+        {
+            float dist = length(hit.pos - rayOrigin);
+            float spotSize = dist * _RaytraceParams.x;
+            float mip = max(0.0, log2(spotSize * 16.0));
+            TriplanarSampling(hit.pos, hit.normal, hit.matId, albedo, normal, roughness, metallic, ao, mip);
+        } 
+        else 
+        {
+            TriplanarSampling(hit.pos, hit.normal, hit.matId, albedo, normal, roughness, metallic, ao, 0);
+        }
+
+        float3 V = -rayDir;
+        float3 L = normalize(_MainLightPosition.xyz);
+        float NdotL = dot(hit.normal, L);
+        float shadowBias = lerp(0.1, 5, saturate(NdotL));
+        float lightAtten = 1.0;
+        
+        // [SHADOWS] Voxel-to-Voxel Shadow (Existing)
+        if (NdotL > 0.001)
+        {
+            float3 shadowOrigin = hit.pos + hit.normal * shadowBias + L * 0.01;
+            if (TraceShadow(shadowOrigin, L, 100.0))
+            {
+                lightAtten = 0.0;
+            }
+        }
+        else
+        {
+            lightAtten = 0.0;
+        }
+
+        // [SHADOWS] Apply Unity Mesh Shadow (New)
+        if (lightAtten > 0.0) // Only sample if not already occluded by a voxel
+        {
+            lightAtten *= GetUnityShadow(hit.pos + hit.normal * 0.1); 
+        }
+
+        float3 direct = LightingDirect(albedo, hit.normal, V, L, _MainLightColor.rgb, roughness, metallic, lightAtten);
+        float3 ambient = albedo * ao * 0.15 * GetSkyColor(hit.normal);
+        resultColor += throughput * (direct + ambient);
+        // Debug views (only on first hit)
+        if (bounce == 0)
+        {
+            if (_DebugViewBricks > 0.5) 
+            {
+                if (hit.isLOD) resultColor = float3(1.0, 0.0, 0.0) * 0.5 + hit.lodColor * 0.5;
+                else if (hit.brickId == 0) resultColor = float3(0, 1, 0);
+                else resultColor = GetRandomColor(hit.brickId);
+                break;
+            }
+            if (_DebugViewNormals > 0.5) 
+            {
+                resultColor = hit.normal * 0.5 + 0.5;
+                break;
+            }
+        }
+
+        // Setup next bounce
+        float3 F0 = lerp(float3(0.04, 0.04, 0.04), albedo, metallic);
+        float3 F = FresnelSchlick(max(dot(hit.normal, V), 0.0), F0);
+        
+        throughput *= F * (1.0 - roughness);
+        rayDir = reflect(rayDir, hit.normal);
+        rayOrigin = hit.pos + hit.normal * 0.02;
+        currentMaxDist = 1000.0;
+        if (max(throughput.r, max(throughput.g, throughput.b)) < 0.05)
+            break;
+    }
+
+    if (anyPrimaryHit)
+    {
+        // [ATMOSPHERE] Apply Atmosphere Color to geometry
+        float dist = length(primaryHit.pos - _CameraToWorld._m03_m13_m23);
+        float fogFactor = 1.0 - exp(-dist * _AtmosphereParams.x);
+        resultColor = lerp(resultColor, _AtmosphereColor.rgb, fogFactor);
+
+        _Result[id.xy] = float4(resultColor, 1.0);
+        float4 clipPos = mul(_CameraViewProjection, float4(primaryHit.pos, 1.0));
+        _ResultDepth[id.xy] = clipPos.z / clipPos.w;
+        _ResultNormals[id.xy] = float4(primaryHit.normal * 0.5 + 0.5, 1.0);
+        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(primaryHit.pos, 1.0));
+        float2 ndc = clipPos.xy / clipPos.w;
+        float2 prevNdc = prevClipPos.xy / prevClipPos.w;
+        float2 currentUV = ndc * 0.5 + 0.5;
+        float2 prevUV = prevNdc * 0.5 + 0.5;
+        _MotionVectorTexture[id.xy] = currentUV - prevUV;
+    }
+    else
+    {
+        _Result[id.xy] = float4(resultColor, 1.0);
+        
+        _ResultDepth[id.xy] = depthVal;
+        
+        _ResultNormals[id.xy] = float4(0.5, 0.5, 0.5, 0.0);
+        
+        float3 farPos = rayOrigin + rayDir * 1000.0;
+        float4 clipPos = mul(_CameraViewProjection, float4(farPos, 1.0));
+        float4 prevClipPos = mul(_PrevViewProjMatrix, float4(farPos, 1.0));
+        float2 ndc = clipPos.xy / clipPos.w;
+        float2 prevNdc = prevClipPos.xy / prevClipPos.w;
+        float2 currentUV = ndc * 0.5 + 0.5;
+        float2 prevUV = prevNdc * 0.5 + 0.5;
+        _MotionVectorTexture[id.xy] = currentUV - prevUV;
+    }
+    if (all(id.xy == (uint2)_MousePosition)) 
+    { 
+        _RaycastBuffer[0] = float4(primaryHit.pos, anyPrimaryHit ? 1.0 : 0.0);
+        _RaycastBuffer[1] = float4((float)primaryHit.chunkId, (float)primaryHit.matId, 0, 0);
+    }
+}
