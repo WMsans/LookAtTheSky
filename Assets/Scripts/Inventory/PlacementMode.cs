@@ -2,7 +2,8 @@ namespace Inventory
 {
     public enum PlacementMode
     {
-        Oriented,  // Uses existing X/Y/Z orientation (panels, ramps)
-        FullCell   // Occupies entire cell, no orientation (blocks, pillars)
+        Oriented,   // Uses existing X/Y/Z orientation (panels, ramps)
+        FullCell,   // Occupies entire cell, no orientation (blocks, pillars)
+        SmallBlock  // Single-cell block placed via direct raycast
     }
 }

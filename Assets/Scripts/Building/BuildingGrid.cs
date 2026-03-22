@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using UnityEngine;
 
 namespace Building
@@ -8,13 +9,11 @@ namespace Building
     {
         public static BuildingGrid Instance { get; private set; }
 
-        private const BoardOrientation FULL = BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z;
+        public event Action<IOccupant> OnOccupantAdded;
+        public event Action<IOccupant> OnOccupantRemoved;
 
-        public event Action<Vector3Int, BoardOrientation> OnBoardAdded;
-        public event Action<Vector3Int, BoardOrientation> OnBoardRemoved;
-
-        private Dictionary<Vector3Int, BoardOrientation> _grid = new();
-        private Dictionary<Vector3Int, Dictionary<BoardOrientation, GameObject>> _boardRegistry = new();
+        private Dictionary<Vector3Int, List<IOccupant>> _cellOccupants = new();
+        private HashSet<IOccupant> _occupantRegistry = new();
 
         private void Awake()
         {
@@ -26,83 +25,194 @@ namespace Building
             Instance = this;
         }
 
-        public bool IsEmpty() => _grid.Count == 0;
+        public bool IsEmpty() => _occupantRegistry.Count == 0;
 
-        public bool HasBoard(Vector3Int pos, BoardOrientation orient)
+        public bool HasOccupant(Vector3Int cell, OccupantType type)
         {
-            return _grid.TryGetValue(pos, out var flags) && (flags & orient) != 0;
-        }
-
-        public bool AddBoard(Vector3Int pos, BoardOrientation orient, GameObject boardObj)
-        {
-            // Check if this exact orientation is already occupied
-            if (HasBoard(pos, orient)) return false;
-
-            // FullCell conflict checks
-            if (_grid.TryGetValue(pos, out var existingFlags))
+            if (!_cellOccupants.TryGetValue(cell, out var list)) return false;
+            foreach (var occ in list)
             {
-                bool placingFull = orient == FULL;
-                bool existingHasFull = existingFlags == FULL;
-
-                // Can't place a panel where a FullCell exists
-                if (existingHasFull && !placingFull) return false;
-                // Can't place a FullCell where any panel exists
-                if (placingFull && existingFlags != BoardOrientation.None) return false;
+                if (occ.Type == type) return true;
             }
-
-            if (_grid.ContainsKey(pos))
-                _grid[pos] |= orient;
-            else
-                _grid[pos] = orient;
-
-            if (!_boardRegistry.ContainsKey(pos))
-                _boardRegistry[pos] = new Dictionary<BoardOrientation, GameObject>();
-            _boardRegistry[pos][orient] = boardObj;
-
-            OnBoardAdded?.Invoke(pos, orient);
-            return true;
+            return false;
         }
 
-        public bool RemoveBoard(Vector3Int pos, BoardOrientation orient)
+        public bool HasBoard(Vector3Int cell, BoardOrientation orient)
         {
-            if (!HasBoard(pos, orient)) return false;
-
-            _grid[pos] &= ~orient;
-            if (_grid[pos] == BoardOrientation.None)
-                _grid.Remove(pos);
-
-            if (_boardRegistry.TryGetValue(pos, out var orientDict))
+            if (!_cellOccupants.TryGetValue(cell, out var list)) return false;
+            foreach (var occ in list)
             {
-                if (orientDict.TryGetValue(orient, out var obj))
-                {
-                    if (obj != null) Destroy(obj);
-                    orientDict.Remove(orient);
-                }
-                if (orientDict.Count == 0)
-                    _boardRegistry.Remove(pos);
+                if (occ is BoardOccupant board && board.Orientation == orient)
+                    return true;
             }
-
-            OnBoardRemoved?.Invoke(pos, orient);
-            return true;
+            return false;
         }
 
-        public GameObject GetBoard(Vector3Int pos, BoardOrientation orient)
+        public bool HasAnyOccupant(Vector3Int cell)
         {
-            if (_boardRegistry.TryGetValue(pos, out var orientDict) &&
-                orientDict.TryGetValue(orient, out var obj))
-                return obj;
+            return _cellOccupants.ContainsKey(cell) && _cellOccupants[cell].Count > 0;
+        }
+
+        public IReadOnlyList<IOccupant> GetOccupants(Vector3Int cell)
+        {
+            if (_cellOccupants.TryGetValue(cell, out var list))
+                return list;
+            return Array.Empty<IOccupant>();
+        }
+
+        public Vector3Int? GetBoardAnchor(Vector3Int cell, BoardOrientation orient)
+        {
+            if (!_cellOccupants.TryGetValue(cell, out var list)) return null;
+            foreach (var occ in list)
+            {
+                if (occ is BoardOccupant board && board.Orientation == orient)
+                    return board.Anchor;
+            }
             return null;
         }
 
-        public bool HasAnyNeighbor(Vector3Int pos, BoardOrientation orient)
+        public BoardOccupant GetBoardOccupant(Vector3Int anchor, BoardOrientation orient)
+        {
+            if (!_cellOccupants.TryGetValue(anchor, out var list)) return null;
+            foreach (var occ in list)
+            {
+                if (occ is BoardOccupant board &&
+                    board.Orientation == orient &&
+                    board.Anchor == anchor)
+                    return board;
+            }
+            return null;
+        }
+
+        public GameObject GetBoard(Vector3Int anchor, BoardOrientation orient)
+        {
+            return GetBoardOccupant(anchor, orient)?.GameObject;
+        }
+
+        public bool AddBoard(Vector3Int anchor, BoardOrientation orient, GameObject boardObj)
+        {
+            var occupant = new BoardOccupant(anchor, orient, boardObj);
+            var cells = occupant.GetOccupiedCells();
+
+            bool isFull = orient == (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+
+            foreach (var cell in cells)
+            {
+                if (!_cellOccupants.TryGetValue(cell, out var list)) continue;
+                foreach (var existing in list)
+                {
+                    if (existing is not BoardOccupant existingBoard) continue;
+
+                    bool existingIsFull = existingBoard.Orientation ==
+                        (BoardOrientation.X | BoardOrientation.Y | BoardOrientation.Z);
+
+                    if (existingIsFull && !isFull) return false;
+                    if (isFull) return false;
+                    if (existingBoard.Orientation == orient) return false;
+                }
+            }
+
+            foreach (var cell in cells)
+            {
+                if (!_cellOccupants.ContainsKey(cell))
+                    _cellOccupants[cell] = new List<IOccupant>();
+                _cellOccupants[cell].Add(occupant);
+            }
+            _occupantRegistry.Add(occupant);
+
+            OnOccupantAdded?.Invoke(occupant);
+            return true;
+        }
+
+        public bool RemoveBoard(Vector3Int anchor, BoardOrientation orient)
+        {
+            var occupant = GetBoardOccupant(anchor, orient);
+            if (occupant == null) return false;
+
+            return RemoveOccupant(occupant);
+        }
+
+        public bool AddSmallBlock(Vector3Int cell, Quaternion rotation, GameObject blockObj)
+        {
+            if (HasOccupant(cell, OccupantType.SmallBlock))
+                return false;
+
+            var occupant = new SmallBlockOccupant(cell, rotation, blockObj);
+
+            if (!_cellOccupants.ContainsKey(cell))
+                _cellOccupants[cell] = new List<IOccupant>();
+            _cellOccupants[cell].Add(occupant);
+            _occupantRegistry.Add(occupant);
+
+            OnOccupantAdded?.Invoke(occupant);
+            return true;
+        }
+
+        public bool RemoveOccupant(IOccupant occupant)
+        {
+            if (!_occupantRegistry.Remove(occupant))
+                return false;
+
+            var cells = occupant.GetOccupiedCells();
+            foreach (var cell in cells)
+            {
+                if (_cellOccupants.TryGetValue(cell, out var list))
+                {
+                    list.Remove(occupant);
+                    if (list.Count == 0)
+                        _cellOccupants.Remove(cell);
+                }
+            }
+
+            if (occupant.GameObject != null)
+                Destroy(occupant.GameObject);
+
+            OnOccupantRemoved?.Invoke(occupant);
+            return true;
+        }
+
+        public bool HasAnyNeighbor(Vector3Int anchor, BoardOrientation orient)
         {
             var neighbors = BoardAdjacency.GetNeighbors(orient);
             foreach (var n in neighbors)
             {
-                if (HasBoard(pos + n.Offset, n.Orientation))
+                Vector3Int neighborAnchor = anchor + n.Offset;
+                if (HasBoard(neighborAnchor, n.Orientation))
+                {
+                    var foundAnchor = GetBoardAnchor(neighborAnchor, n.Orientation);
+                    if (foundAnchor.HasValue && foundAnchor.Value == neighborAnchor)
+                        return true;
+                }
+            }
+            return false;
+        }
+
+        public bool HasAnyFaceNeighbor(Vector3Int cell)
+        {
+            Vector3Int[] offsets =
+            {
+                Vector3Int.right, Vector3Int.left,
+                Vector3Int.up, Vector3Int.down,
+                new Vector3Int(0, 0, 1), new Vector3Int(0, 0, -1)
+            };
+
+            foreach (var offset in offsets)
+            {
+                if (HasAnyOccupant(cell + offset))
                     return true;
             }
             return false;
+        }
+
+        public IOccupant FindOccupantByGameObject(Vector3Int cell, GameObject obj)
+        {
+            if (!_cellOccupants.TryGetValue(cell, out var list)) return null;
+            foreach (var occ in list)
+            {
+                if (occ.GameObject == obj)
+                    return occ;
+            }
+            return null;
         }
     }
 }

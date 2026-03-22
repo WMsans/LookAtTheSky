@@ -17,7 +17,7 @@ namespace Building
         // Track which item was placed at each GameObject so we can restore on removal
         private Dictionary<GameObject, Inventory.BuildingItemSO> _placedItemTracker = new();
 
-        // Temporarily stores the item being placed between OnBeforePlace and OnBoardPlaced
+        // Temporarily stores the item being placed between OnBeforePlace and OnOccupantPlaced
         private Inventory.BuildingItemSO _pendingPlaceItem;
 
         private void Start()
@@ -45,7 +45,7 @@ namespace Building
             _inventoryManager.OnChanged += HandleInventoryChanged;
 
             _buildingController.OnBeforePlace += HandleBeforePlace;
-            _buildingController.OnBoardPlaced += HandleBoardPlaced;
+            _buildingController.OnOccupantPlaced += HandleOccupantPlaced;
             _buildingController.OnPlaceFailed += HandlePlaceFailed;
             _buildingController.OnBeforeRemove += HandleBeforeRemove;
 
@@ -62,7 +62,7 @@ namespace Building
             if (_buildingController != null)
             {
                 _buildingController.OnBeforePlace -= HandleBeforePlace;
-                _buildingController.OnBoardPlaced -= HandleBoardPlaced;
+                _buildingController.OnOccupantPlaced -= HandleOccupantPlaced;
                 _buildingController.OnPlaceFailed -= HandlePlaceFailed;
                 _buildingController.OnBeforeRemove -= HandleBeforeRemove;
             }
@@ -110,15 +110,15 @@ namespace Building
                 return;
             }
 
-            // Store reference so HandleBoardPlaced can track it
+            // Store reference so HandleOccupantPlaced can track it
             _pendingPlaceItem = item;
         }
 
-        private void HandleBoardPlaced(Vector3Int pos, BoardOrientation orient, GameObject board)
+        private void HandleOccupantPlaced(IOccupant occupant)
         {
-            if (_pendingPlaceItem != null)
+            if (_pendingPlaceItem != null && occupant?.GameObject != null)
             {
-                _placedItemTracker[board] = _pendingPlaceItem;
+                _placedItemTracker[occupant.GameObject] = _pendingPlaceItem;
                 _pendingPlaceItem = null;
             }
         }
@@ -133,12 +133,13 @@ namespace Building
             }
         }
 
-        private void HandleBeforeRemove(Vector3Int pos, BoardOrientation orient, GameObject board)
+        private void HandleBeforeRemove(IOccupant occupant)
         {
-            if (_placedItemTracker.TryGetValue(board, out var item))
+            var go = occupant?.GameObject;
+            if (go != null && _placedItemTracker.TryGetValue(go, out var item))
             {
                 _inventoryManager.AddItem(item, 1);
-                _placedItemTracker.Remove(board);
+                _placedItemTracker.Remove(go);
             }
         }
     }
