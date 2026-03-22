@@ -24,17 +24,15 @@ namespace Building
         private InputAction _previousAction;
         private InputAction _nextAction;
 
-        // Current target state
         private bool _hasTarget;
         private Vector3Int _targetPos;
         private BoardOrientation _targetOrient;
+        private Quaternion _targetRotation;
 
-        // Active item state (set externally by bridge)
         private GameObject _activePrefab;
         private Inventory.PlacementMode _activePlacementMode;
         private bool _inputEnabled = true;
 
-        /// <summary>Set by BuildingInventoryBridge when the active hotbar item changes.</summary>
         public GameObject ActivePrefab
         {
             get => _activePrefab;
@@ -46,18 +44,16 @@ namespace Building
             }
         }
 
-        /// <summary>Set by BuildingInventoryBridge when the active hotbar item changes.</summary>
         public Inventory.PlacementMode ActivePlacementMode
         {
             get => _activePlacementMode;
             set => _activePlacementMode = value;
         }
 
-        // Events for decoupled integration
         public event Action<PlaceCancelEventArgs> OnBeforePlace;
-        public event Action<Vector3Int, BoardOrientation, GameObject> OnBoardPlaced;
+        public event Action<IOccupant> OnOccupantPlaced;
         public event Action<Vector3Int, BoardOrientation> OnPlaceFailed;
-        public event Action<Vector3Int, BoardOrientation, GameObject> OnBeforeRemove;
+        public event Action<IOccupant> OnBeforeRemove;
 
         private void Awake()
         {
@@ -74,7 +70,6 @@ namespace Building
             if (_grid == null)
                 Debug.LogError("[BuildingController] BuildingGrid.Instance not found.");
 
-            // Subscribe to MouseManager for input toggling
             if (UI.MouseManager.Instance != null)
                 UI.MouseManager.Instance.OnCursorStateChanged += HandleCursorStateChanged;
         }
@@ -99,17 +94,19 @@ namespace Building
         {
             if (_grid == null) return;
 
-            // Handle hotbar switching (always active)
             HandleHotbarInput();
 
             if (!_inputEnabled) return;
 
             _hasTarget = false;
 
-            // Only target for placement if we have an active prefab
             if (_activePrefab != null)
             {
-                if (_grid.IsEmpty())
+                if (_activePlacementMode == Inventory.PlacementMode.SmallBlock)
+                {
+                    HandleSmallBlockTargeting();
+                }
+                else if (_grid.IsEmpty())
                 {
                     HandleFirstBoardTargeting();
                 }
@@ -119,11 +116,22 @@ namespace Building
                 }
             }
 
-            // Update preview
             if (_hasTarget)
             {
-                Vector3 worldPos = PlacementTriggerManager.GridToWorld(_targetPos, _targetOrient);
-                Quaternion rotation = PlacementTriggerManager.GetBoardRotation(_targetOrient);
+                Vector3 worldPos;
+                Quaternion rotation;
+
+                if (_activePlacementMode == Inventory.PlacementMode.SmallBlock)
+                {
+                    worldPos = GridConstants.SmallBlockGridToWorld(_targetPos);
+                    rotation = _targetRotation;
+                }
+                else
+                {
+                    worldPos = PlacementTriggerManager.GridToWorld(_targetPos, _targetOrient);
+                    rotation = PlacementTriggerManager.GetBoardRotation(_targetOrient);
+                }
+
                 boardPreview.ShowAt(worldPos, rotation);
             }
             else
@@ -131,13 +139,14 @@ namespace Building
                 boardPreview.Hide();
             }
 
-            // Handle placement
             if (_hasTarget && _attackAction.WasPressedThisFrame())
             {
-                PlaceBoard(_targetPos, _targetOrient);
+                if (_activePlacementMode == Inventory.PlacementMode.SmallBlock)
+                    PlaceSmallBlock(_targetPos, _targetRotation);
+                else
+                    PlaceBoard(_targetPos, _targetOrient);
             }
 
-            // Handle removal (works even without active prefab)
             if (_removeAction.WasPressedThisFrame())
             {
                 HandleRemoval();
@@ -146,7 +155,6 @@ namespace Building
 
         private void HandleHotbarInput()
         {
-            // Number keys 1-9
             for (int i = 0; i < 9; i++)
             {
                 if (Keyboard.current != null && Keyboard.current[Key.Digit1 + i].wasPressedThisFrame)
@@ -156,7 +164,6 @@ namespace Building
                 }
             }
 
-            // Previous/Next actions (scroll wheel, keyboard, or gamepad dpad)
             if (_previousAction.WasPressedThisFrame())
             {
                 var mgr = Inventory.InventoryManager.Instance;
@@ -175,6 +182,29 @@ namespace Building
                     mgr.SetActiveSlot((current + 1) % Inventory.Inventory.HOTBAR_SIZE);
                 }
             }
+        }
+
+        private void HandleSmallBlockTargeting()
+        {
+            Ray ray = new Ray(cameraTransform.position, cameraTransform.forward);
+
+            if (!Physics.Raycast(ray, out RaycastHit hit, maxPlacementDistance, boardLayer))
+                return;
+
+            Vector3Int targetCell = WorldToGrid(hit.point + hit.normal * 0.5f);
+
+            if (!_grid.HasAnyFaceNeighbor(targetCell))
+                return;
+
+            if (_grid.HasOccupant(targetCell, OccupantType.SmallBlock))
+                return;
+
+            Vector3 blockWorldPos = GridConstants.SmallBlockGridToWorld(targetCell);
+            Quaternion rotation = SmallBlockRotation.ComputeRotation(hit.normal, cameraTransform.position, blockWorldPos);
+
+            _hasTarget = true;
+            _targetPos = targetCell;
+            _targetRotation = rotation;
         }
 
         private void HandleFirstBoardTargeting()
@@ -221,7 +251,6 @@ namespace Building
                 return;
             }
 
-            // Fire OnBeforePlace to allow cancellation (e.g., inventory check)
             var args = new PlaceCancelEventArgs(pos, orient);
             OnBeforePlace?.Invoke(args);
             if (args.Cancel) return;
@@ -234,12 +263,49 @@ namespace Building
 
             if (_grid.AddBoard(pos, orient, board))
             {
-                OnBoardPlaced?.Invoke(pos, orient, board);
+                var occupant = _grid.GetBoardOccupant(pos, orient);
+                OnOccupantPlaced?.Invoke(occupant);
             }
             else
             {
                 Destroy(board);
                 OnPlaceFailed?.Invoke(pos, orient);
+            }
+        }
+
+        private void PlaceSmallBlock(Vector3Int pos, Quaternion rotation)
+        {
+            if (_activePrefab == null)
+            {
+                Debug.LogError("[BuildingController] No active prefab assigned.");
+                return;
+            }
+
+            var args = new PlaceCancelEventArgs(pos, BoardOrientation.X);
+            OnBeforePlace?.Invoke(args);
+            if (args.Cancel) return;
+
+            Vector3 worldPos = GridConstants.SmallBlockGridToWorld(pos);
+
+            GameObject block = Instantiate(_activePrefab, worldPos, rotation);
+            block.name = $"SmallBlock_{pos}";
+
+            if (_grid.AddSmallBlock(pos, rotation, block))
+            {
+                var occupant = _grid.GetOccupants(pos);
+                foreach (var occ in occupant)
+                {
+                    if (occ.Type == OccupantType.SmallBlock)
+                    {
+                        OnOccupantPlaced?.Invoke(occ);
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                Destroy(block);
+                OnPlaceFailed?.Invoke(pos, BoardOrientation.X);
             }
         }
 
@@ -251,22 +317,14 @@ namespace Building
             {
                 Vector3Int cell = WorldToGrid(hit.point);
 
-                // Try each orientation to find which board owns this cell
-                foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z, FULL })
+                IOccupant occupant = _grid.FindOccupantByGameObject(cell, hit.collider.gameObject);
+                if (occupant != null)
                 {
-                    Vector3Int? anchor = _grid.GetAnchor(cell, orient);
-                    if (!anchor.HasValue) continue;
-
-                    GameObject board = _grid.GetBoard(anchor.Value, orient);
-                    if (board != null && board == hit.collider.gameObject)
-                    {
-                        OnBeforeRemove?.Invoke(anchor.Value, orient, board);
-                        _grid.RemoveBoard(anchor.Value, orient);
-                        return;
-                    }
+                    OnBeforeRemove?.Invoke(occupant);
+                    _grid.RemoveOccupant(occupant);
+                    return;
                 }
 
-                // Fallback: check immediate neighboring cells (hit point may land on cell boundary)
                 for (int dx = -1; dx <= 1; dx++)
                 {
                     for (int dy = -1; dy <= 1; dy++)
@@ -275,18 +333,12 @@ namespace Building
                         {
                             if (dx == 0 && dy == 0 && dz == 0) continue;
                             Vector3Int checkCell = cell + new Vector3Int(dx, dy, dz);
-                            foreach (BoardOrientation orient in new[] { BoardOrientation.X, BoardOrientation.Y, BoardOrientation.Z, FULL })
+                            occupant = _grid.FindOccupantByGameObject(checkCell, hit.collider.gameObject);
+                            if (occupant != null)
                             {
-                                Vector3Int? anchor = _grid.GetAnchor(checkCell, orient);
-                                if (!anchor.HasValue) continue;
-
-                                GameObject board = _grid.GetBoard(anchor.Value, orient);
-                                if (board != null && board == hit.collider.gameObject)
-                                {
-                                    OnBeforeRemove?.Invoke(anchor.Value, orient, board);
-                                    _grid.RemoveBoard(anchor.Value, orient);
-                                    return;
-                                }
+                                OnBeforeRemove?.Invoke(occupant);
+                                _grid.RemoveOccupant(occupant);
+                                return;
                             }
                         }
                     }
